@@ -27,9 +27,7 @@ from typing import List, Dict, Optional
 
 import json
 import matplotlib.pyplot as plt
-# ---------------------------
-# 1) Reusable ViT definition
-# ---------------------------
+
 
 class MSA(nn.Module):
     def __init__(self, dim, num_heads):
@@ -610,9 +608,7 @@ def vitc_h14(num_classes=10):
     # "Huge" commonly uses patch_size=14 in many open-source releases
     return ViT_sc_features(ViTConfig(img_size=32, embed_dim=1280, depth=32, num_heads=16, patch_size=16, num_classes=num_classes,mlp_ratio=4.0))
 
-# ---------------------------------
-# 2) Utilities: metrics & schedules
-# ---------------------------------
+
 
 
 def iter_regularized_params(model):
@@ -685,9 +681,7 @@ def cosine_with_warmup(step, total_steps, base_lr, min_lr, warmup_steps=0):
     cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
     return min_lr + (base_lr - min_lr) * cosine
 
-# ---------------
-# 3) Train / Eval
-# ---------------
+
 
 def train_one_epoch(epoch, model, loader, optimizer, loss_fn, scaler, device, 
                     lr_schedule=None, 
@@ -747,9 +741,7 @@ def evaluate(model, loader, loss_fn, device):
         n += bs
     return total_loss / n, total_top1 / n
 
-# --------------
-# 4) Main script
-# --------------
+
 
 def plot_histories(
     histories: List[Dict[str, list]],
@@ -968,6 +960,7 @@ def train_model_vitc():
     print(f"Done. Best val acc: {best_acc:.2f}%")
 
     return history
+
 
 
 
