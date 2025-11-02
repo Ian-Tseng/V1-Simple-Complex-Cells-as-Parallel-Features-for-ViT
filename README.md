@@ -156,10 +156,10 @@ logits = model(images)   # (B, 3, 32, 32) -> (B, num_classes)
 ---
 
 ## 📚 Background
-
 - Hubel & Wiesel (1962): V1 simple/complex cells and orientation tuning.  
-- Energy model of complex cells: phase-invariant quadrature pooling.
-
+- Energy model of complex cells: phase-invariant quadrature pooling.  
+- **Dosovitskiy et al. (2020)** – *An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale.*  
+  Introduced the Vision Transformer (ViT) architecture, which our model extends by integrating biologically inspired early vision mechanisms.
 ---
 
 ## License
