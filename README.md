@@ -130,16 +130,6 @@ def forward(self, x):                      # x: (B, C, H, W)
 
 ---
 
-## 🧪 Ablations & Extensions
-
-1. **Quadrature complex**: provide `(even, odd)` or concatenated/interleaved even+odd to `ComplexFromSimplePatches`.
-2. **Gated fusion**: `x + σ(g_c)⊙xc + σ(g_s)⊙xs` with learnable gates per stream.
-3. **Periodic fusion**: fuse every `k` layers (or cross-attend between streams) instead of single late fusion.
-4. **Stream dropouts**: randomly drop a stream during training for robustness (mixture-of-experts style).
-5. **Separate positional embeddings**: `pos_embed_raw`, `pos_embed_cmp`, `pos_embed_smp` if distributions diverge.
-
----
-
 ## 🧠 Training Tips
 
 - Ensure **all three outputs** are in the same width (`embed_dim`) before fusion.
