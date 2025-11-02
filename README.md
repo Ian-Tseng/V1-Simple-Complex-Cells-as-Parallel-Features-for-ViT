@@ -173,9 +173,4 @@ MIT (or your preferred license).
 If you use this code, please cite this repository and relevant V1 literature.
 
 
----
-
-## Citation
-
-If you use this code, please cite this repository and relevant V1 literature.
 
