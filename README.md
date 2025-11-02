@@ -1,20 +1,25 @@
-# ViT_sc_features — V1 Simple/Complex Cells as Parallel Features for ViT
+# ViT_sc_features — Three-Stream ViT with V1 Simple/Complex Features
 
-This repository implements a Vision Transformer front-end that injects **biologically inspired V1 features**. We compute **phase-sensitive (Simple)** and **phase-invariant (Complex)** orientation responses and feed them into a **parallel twin-stream encoder**: one stream processes **raw ViT patch tokens**, the other processes **complex-cell tokens** derived from odd-phase Gabor simple cells. The two streams are encoded **independently** and **fused late** by a parameter-free additive merge before classification.
+This repository implements a Vision Transformer with **three parallel streams**:
+1) a **raw patch** stream (standard ViT tokens),
+2) a **complex-cell** stream derived from odd-phase simple cells and complex pooling,
+3) a **simple-cell** stream using a bank of fixed Gabor filters.
+
+Each stream is encoded **independently** with its own Transformer stack and fused with a **late additive merge** before classification.
 
 - **Simple cells**: fixed Gabor filtering + rectification → orientation & phase specific.
-- **Complex cells**: magnitude/energy of simple responses → phase/contrast polarity invariant.
-- **Twin encoders**: independent Transformer stacks for raw and complex streams.
-- **Late additive fusion**: `LayerNorm(raw + complex)` before the classifier.
+- **Complex cells**: magnitude/energy of simple responses (odd-only by default) → polarity-invariant.
+- **Three encoders**: parallel Transformer stacks for raw, complex, and simple streams.
+- **Late additive fusion**: `LayerNorm(raw + complex + simple)` before the classifier.
 
 ---
 
-## ✨ Highlights
+## ✨ What’s in this version
 
-- **Fixed Gabor bank** (strong inductive bias, fewer params, stable early training).
-- **Patch-aligned features**: all streams output `(B, N_patches, D)`; easy to concatenate or fuse.
-- **Odd-only complex** mode for **cheap phase invariance**; full **even+odd quadrature** is a drop-in change.
-- Clean separation of components for ablations and extensions.
+- **Three-stream architecture** (raw, complex, simple).
+- **Shape-compatible tokens** by projecting complex/simple features to `cfg.embed_dim`.
+- **Odd-only complex mode** for efficiency; switchable to full quadrature when needed.
+- **Fixed Gabor bank** via `register_buffer` to enforce a strong edge/orientation inductive bias.
 
 ---
 
@@ -22,11 +27,14 @@ This repository implements a Vision Transformer front-end that injects **biologi
 
 ```
 Image (B,C,H,W)
-   ├─► PatchEmbed ──► +[CLS], Pos ──► blocks   ──► x_raw
-   └─► MonocularSimpleOddGaborEmbed (odd) ──► ComplexFromSimplePatches (odd_only, proj→embed_dim)
-                      └─► +[CLS], Pos ──► blocks1 ──► x_comp
+   ├─► PatchEmbed ───────────────► +[CLS], Pos ──► blocks   ──► x_raw
+   ├─► MonocularSimpleOddGaborEmbed (odd)
+   │     └─► ComplexFromSimplePatches (odd_only, proj→embed_dim)
+   │            └─► +[CLS], Pos ──► blocks1 ──► x_comp
+   └─► SimpleGaborEmbed (fixed Gabors, proj→embed_dim)
+          └─► +[CLS], Pos ──► blocks2 ──► x_simp
 
-Fusion: x = LayerNorm(x_raw + x_comp)
+Fusion: x = LayerNorm(x_raw + x_comp + x_simp)
 Head:   y = Linear(x[:, CLS])
 ```
 
@@ -35,24 +43,20 @@ Head:   y = Linear(x[:, CLS])
 ## 🧩 Components
 
 ### SimpleGaborEmbed
-Fixed, evenly spaced orientations \\(\\theta \\in [0,\\pi)\\).  
-`conv2d` (per channel) → `ReLU` → `AvgPool2d(patch_size)` → optional `Linear(n_gabor → embed_dim)`  
-**Output:** `(B, N_patches, embed_dim)`
+- Fixed orientations \\(\\theta \\in [0,\\pi)\\); `conv2d` per channel → `ReLU` → `AvgPool2d(patch_size)`.
+- Optional `Linear(n_gabor → embed_dim)` to match ViT width.
+- **Output:** `(B, N_patches, cfg.embed_dim)` when `embed_dim=cfg.embed_dim` (recommended for fusion).
 
-### MonocularSimpleOddGaborEmbed
-Patchwise **odd-phase** Gabor responses per orientation (odd ≈ spatial derivative).  
-**Output:** `(B, N_patches, n_orient)` plus auxiliary maps (`signed_maps`, `polarity`, `ori_idx`).
+### MonocularSimpleOddGaborEmbed → ComplexFromSimplePatches
+- Odd-phase simple responses per orientation → complex energy.
+- **Odd-only (used here):** \\( y_\\theta \\approx |S_{\\text{odd},\\theta}| = \\sqrt{S_{\\text{odd},\\theta}^2 + \\varepsilon} \\).
+- Set `embed_dim_out = cfg.embed_dim` to align with ViT width.
+- **Output:** `(B, N_patches, cfg.embed_dim)`.
 
-### ComplexFromSimplePatches
-Computes complex-cell responses per patch.  
-- **Odd-only (used here):** \\( y_\\theta \\approx |S_{\\text{odd},\\theta}| = \\sqrt{S_{\\text{odd},\\theta}^2 + \\varepsilon} \\).  
-- **Quadrature (optional):** \\( \\sqrt{S_e^2 + S_o^2 + \\varepsilon} \\) using even+odd pairs.  
-- With `embed_dim_out = cfg.embed_dim` to match ViT width.  
-**Output:** `(B, N_patches, cfg.embed_dim)`
-
-
-### ViT Encoder Blocks
-Two independent stacks (`blocks`, `blocks1`) of standard Transformer encoder blocks (same width `cfg.embed_dim`).
+### Transformer Stacks
+- `blocks`  : raw stream encoder (width = `cfg.embed_dim`).
+- `blocks1` : complex stream encoder (width = `cfg.embed_dim`).
+- `blocks2` : simple stream encoder (width = `cfg.embed_dim`).
 
 ---
 
@@ -62,33 +66,38 @@ Two independent stacks (`blocks`, `blocks1`) of standard Transformer encoder blo
 def forward(self, x):                      # x: (B, C, H, W)
     B = x.size(0)
 
-    # Complex stream (V1 features)
-    x1, signed_maps, polarity, ori_idx = self.mono_simple(x)        # (B,N,n_orient)
-    xc = self.complex_embed(x1, mode="odd_only")                    # (B,N,embed_dim)
-
+    # --- simple stream ---
+    xs = self.simple_gabor_embed(x)                            # (B, N, embed_dim)
     cls = self.cls_token.expand(B, -1, -1)
-    xc  = torch.cat([cls, xc], dim=1)
-    xc  = xc + self.pos_embed[:, : xc.size(1), :]
-    xc  = self.pos_drop(xc)
+    xs  = torch.cat([cls, xs], dim=1)
+    xs  = xs + self.pos_embed[:, : xs.size(1), :]
+    xs  = self.pos_drop(xs)
 
-    # Raw stream
-    x   = self.patch_embed(x)                                       # (B,N,embed_dim)
-    x   = torch.cat([cls, x], dim=1)
-    x   = x + self.pos_embed[:, : x.size(1), :]
-    x   = self.pos_drop(x)
+    # --- complex stream ---
+    x1, signed_maps, polarity, ori_idx = self.mono_simple(x)   # (B, N, n_orient)
+    xc = self.complex_embed(x1, mode="odd_only")               # (B, N, embed_dim)
+    xc = torch.cat([cls, xc], dim=1)
+    xc = xc + self.pos_embed[:, : xc.size(1), :]
+    xc = self.pos_drop(xc)
 
-    # Twin encoders
-    for blk, blk1 in zip(self.blocks, self.blocks1):
+    # --- raw stream ---
+    x  = self.patch_embed(x)                                   # (B, N, embed_dim)
+    x  = torch.cat([cls, x], dim=1)
+    x  = x + self.pos_embed[:, : x.size(1), :]
+    x  = self.pos_drop(x)
+
+    # --- parallel encoders ---
+    for blk, blk1, blk2 in zip(self.blocks, self.blocks1, self.blocks2):
         x  = blk(x)
         xc = blk1(xc)
+        xs = blk2(xs)   # NOTE: use blk2 for the simple stream
 
-    # Late fusion + head
-    x = self.norm(x + xc)
+    # --- late fusion + head ---
+    x = self.norm(x + xc + xs)
     cls_out = x[:, 0]
     return self.head(cls_out)
 ```
-
-> `SimpleGaborEmbed` is computed as `s = self.simple_gabor_embed(x)` for ablation or auxiliary objectives; it is not fused by default in the snippet above.
+> **Note:** If your code currently uses `xs = blk1(xs)`, update it to `xs = blk2(xs)` to ensure the simple stream uses its own stack.
 
 ---
 
@@ -96,7 +105,7 @@ def forward(self, x):                      # x: (B, C, H, W)
 
 - **Input image:** `(B, C, H, W)` with `H = W = cfg.img_size`  
 - **Patches:** `N_patches = (H / cfg.patch_size)^2`  
-- **Token width:** both streams use `cfg.embed_dim`; fusion is elementwise.
+- **Token width:** all three streams use `cfg.embed_dim`; fusion is elementwise.
 
 ---
 
@@ -106,37 +115,37 @@ def forward(self, x):                      # x: (B, C, H, W)
 |---|---|
 | `img_size`, `patch_size`, `in_chans` | Image shape & tokenization. |
 | `gabor` | Number of Gabor orientations (`n_orient`). |
-| `part_embed_dim` | Dim for simple/complex branches (kept for ablations). |
-| `embed_dim` | **ViT width** and complex stream projection width. |
-| `num_heads`, `mlp_ratio`, `depth`, `dropout` | ViT hyperparameters for both stacks. |
-| `num_classes` | Classifier output classes. |
+| `part_embed_dim` | Dim for simple/complex inner computations (e.g., `mono_simple`), separate from fusion width. |
+| `embed_dim` | **Shared token width** for all three streams and the ViT blocks. |
+| `num_heads`, `mlp_ratio`, `depth`, `dropout` | ViT hyperparameters (applied to all three stacks). |
+| `num_classes` | Classifier output size. |
 
 ---
 
 ## 🔍 Design Rationale
 
-- **Independent encoding** preserves modality-specific inductive biases (raw vs V1 energy) before interaction.
-- **Late additive fusion** is stable and parameter-free; aligns shapes by projecting complex tokens to `embed_dim`.
-- **Odd-only complex** halves compute vs full quadrature yet keeps strong edge sensitivity. Quadrature is a drop-in replacement when needed.
+- **Modality-preserving**: Each stream keeps its own inductive bias (raw pixels vs V1 energy vs rectified Gabor) before interaction.
+- **Late additive fusion**: Stable, parameter-free; relies on width alignment (`embed_dim`).
+- **Odd-only complex**: Halves compute vs quadrature while maintaining strong edge sensitivity. Upgrade to full quadrature if invariance to small shifts is critical.
 
 ---
 
 ## 🧪 Ablations & Extensions
 
-1. **Use `SimpleGaborEmbed` in fusion:** `torch.cat([tokens, s], dim=-1)` with a bottleneck MLP back to `embed_dim`.  
-2. **Quadrature complex:** call `complex_embed((even, odd))` or supply concatenated/interleaved even+odd.  
-3. **Gated fusion:** `x + σ(g) ⊙ xc` with a learnable gate `g` (scalar/vector/token).  
-4. **Periodic fusion:** fuse every `k` layers instead of only once at the end.  
-5. **Separate positional embeddings:** have `pos_embed_raw` and `pos_embed_cmp` if distributions differ.
+1. **Quadrature complex**: provide `(even, odd)` or concatenated/interleaved even+odd to `ComplexFromSimplePatches`.
+2. **Gated fusion**: `x + σ(g_c)⊙xc + σ(g_s)⊙xs` with learnable gates per stream.
+3. **Periodic fusion**: fuse every `k` layers (or cross-attend between streams) instead of single late fusion.
+4. **Stream dropouts**: randomly drop a stream during training for robustness (mixture-of-experts style).
+5. **Separate positional embeddings**: `pos_embed_raw`, `pos_embed_cmp`, `pos_embed_smp` if distributions diverge.
 
 ---
 
 ## 🧠 Training Tips
 
-- Start with **odd_only** for speed; test quadrature for robustness.  
-- If VRAM is tight: reduce `depth` of the complex stream or share weights across some layers.  
-- Keep augmentation identical across streams since both derive from the same input.  
-- Tune `ksize/sigma/lam` to dataset scale; increase `ksize` for higher-resolution images.
+- Ensure **all three outputs** are in the same width (`embed_dim`) before fusion.
+- Start with **odd-only** for speed; benchmark quadrature later.
+- If VRAM is tight: reduce `depth` of auxiliary streams (`blocks1`, `blocks2`) or tie weights.
+- Keep augmentations identical across streams since they share the same input image.
 
 ---
 
@@ -158,7 +167,7 @@ logits = model(images)   # (B, 3, 32, 32) -> (B, num_classes)
 
 ## 📚 Background
 
-- Hubel & Wiesel (1962): orientation-selective simple/complex cells in V1.  
+- Hubel & Wiesel (1962): V1 simple/complex cells and orientation tuning.  
 - Energy model of complex cells: phase-invariant quadrature pooling.
 
 ---
@@ -166,6 +175,13 @@ logits = model(images)   # (B, 3, 32, 32) -> (B, num_classes)
 ## License
 
 MIT (or your preferred license).
+
+---
+
+## Citation
+
+If you use this code, please cite this repository and relevant V1 literature.
+
 
 ---
 
