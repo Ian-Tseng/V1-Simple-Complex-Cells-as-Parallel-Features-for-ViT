@@ -587,7 +587,7 @@ class ViT_sc_features(nn.Module):
         for blk, blk1, blk2 in zip(self.blocks, self.blocks1, self.blocks2):
             x = blk(x)
             xc= blk1(xc)
-            xs= blk1(xs)
+            xs= blk2(xs)
         x = self.norm(x+xc+xs)
         cls_out = x[:, 0]
         return self.head(cls_out)
@@ -960,6 +960,7 @@ def train_model_vitc():
     print(f"Done. Best val acc: {best_acc:.2f}%")
 
     return history
+
 
 
 
