@@ -1,4 +1,83 @@
-  
+# ViT_sc_features — Vision Transformer with V1 Simple/Complex Streams
+
+This repository implements a biologically inspired Vision Transformer that integrates three early-vision feature streams—**raw patches**, **simple-cell Gabor filters**, and **complex-cell energy responses**—before feeding them into a single ViT encoder.
+
+The model extends the standard ViT patch embedding using mechanisms inspired by **Hubel & Wiesel’s V1 simple/complex cells**.
+
+---
+
+## 🌟 Key Idea
+
+Standard ViT uses *only raw patches*.  
+Here, we enrich the token representation using three streams:
+
+1. **Raw patches** (standard ViT features)
+2. **Simple cell stream**  
+   - fixed Gabor filters  
+   - orientation-selective, phase-specific
+3. **Complex cell stream**  
+   - pooled odd-phase simple responses  
+   - polarity-invariant boundary magnitude
+
+Each stream produces token width **D = embed_dim / 3**, and tokens are concatenated:
+
+```
+x_fused = concat([x_raw, x_simple, x_complex], dim = -1)  # final width = embed_dim
+```
+
+This enriched token is given to a **single Transformer encoder**.
+
+---
+
+## 🏗️ Architecture Overview (Early Fusion)
+
+```
+Image (B, C, H, W)
+   ├── PatchEmbed (raw patches)          ┐
+   ├── SimpleGaborEmbed (simple cells)   ├── concatenate → fused tokens → +CLS & Pos → ViT blocks → Head
+   └── ComplexFromSimplePatches          ┘
+```
+
+- Each stream width: `part_embed_dim = embed_dim / 3`
+- Fused token width: `embed_dim`
+- A single Transformer encoder processes fused tokens
+
+---
+
+## 🔧 Components
+
+### **SimpleGaborEmbed**
+- Fixed Gabor kernels over several orientations  
+- Convolution → ReLU → Patch pooling  
+- Produces phase-specific orientation features
+
+### **MonocularSimpleOddGaborEmbed → ComplexFromSimplePatches**
+- Odd-phase Gabor responses  
+- Squared and pooled  
+- Produces phase/polarity-invariant boundary energy
+
+### **Early Fusion**
+- Three streams concatenated along feature dimension  
+- CLS token and positional encoding applied after fusion  
+- Passed into standard ViT encoder blocks
+
+---
+
+## ⚙️ Configuration (`ViTConfig`)
+
+| Field | Description |
+|-------|-------------|
+| `img_size`, `patch_size`, `in_chans` | Image & patch geometry |
+| `gabor` | Number of Gabor orientations |
+| `embed_dim` | Final ViT token width |
+| `part_embed_dim` | Per-stream width (`embed_dim // 3`) |
+| `num_heads`, `mlp_ratio`, `depth` | Transformer hyperparameters |
+| `dropout` | Dropout |
+| `num_classes` | Output classes |
+
+**Important:**  
+```
+embed_dim must be divisible by 3  
 part_embed_dim = embed_dim // 3
 ```
 
@@ -104,9 +183,6 @@ This work builds on foundational research in:
 - Early visual neuroscience (Hubel & Wiesel)  
 - Complex-cell energy models  
 - Vision Transformers (Dosovitskiy et al.)  
-## Citation
-
-If you use this code, please cite this repository and relevant V1 literature.
 
 
 
