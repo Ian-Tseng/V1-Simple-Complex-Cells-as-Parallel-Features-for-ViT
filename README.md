@@ -1,4 +1,4 @@
-# ViT_sc_features — Vision Transformer with V1 Simple/Complex Streams
+# Vision Transformer with V1 Simple/Complex Streams
 
 This repository implements a biologically inspired Vision Transformer that integrates three early-vision feature streams—**raw patches**, **simple-cell Gabor filters**, and **complex-cell energy responses**—before feeding them into a single ViT encoder.
 
